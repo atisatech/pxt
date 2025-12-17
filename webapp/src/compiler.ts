@@ -590,25 +590,28 @@ export function getBlocksAsync(): Promise<pxtc.BlocksInfo> {
     if (!cachedBlocks) {
         // Used packaged info
         const bannedCategories = pkg.mainPkg.resolveBannedCategories();
+        console.log("[PXT DEBUG] getBlocksAsync: Starting block extraction");
         return getCachedApiInfoAsync(pkg.mainEditorPkg(), pxt.getBundledApiInfo())
             .then(apis => {
                 if (apis) {
+                    console.log("[PXT DEBUG] getBlocksAsync: Using CACHED API info");
                     return ts.pxtc.localizeApisAsync(apis, pkg.mainPkg)
                         .then(apis => {
                             return cachedBlocks = pxtc.getBlocksInfo(apis, bannedCategories)
                         });
                 }
                 else {
+                    console.log("[PXT DEBUG] getBlocksAsync: Cached API info returned null, using FRESH compilation");
                     return getApisInfoAsync().then(info => {
                         const bannedCategories = pkg.mainPkg.resolveBannedCategories();
                         cachedBlocks = pxtc.getBlocksInfo(info, bannedCategories);
-
                         return cacheApiInfoAsync(pkg.mainEditorPkg(), info);
                     }).then(() => cachedBlocks)
                 }
             })
     }
 
+    console.log("[PXT DEBUG] getBlocksAsync: Using existing cachedBlocks");
     return Promise.resolve(cachedBlocks);
 }
 
@@ -624,10 +627,17 @@ interface UsedPackageInfo {
 }
 
 async function getCachedApiInfoAsync(project: pkg.EditorPackage, bundled: pxt.Map<pxt.PackageApiInfo>): Promise<pxtc.ApisInfo> {
-    if (!bundled) return null;
+    console.log("[PXT DEBUG] getCachedApiInfoAsync: Called");
+    if (!bundled) {
+        console.log("[PXT DEBUG] getCachedApiInfoAsync: No bundled API info, returning null");
+        return null;
+    }
     const corePkgName = "libs/" + pxt.appTarget.corepkg;
     const corePkg = bundled[corePkgName];
-    if (!corePkg) return null;
+    if (!corePkg) {
+        console.log("[PXT DEBUG] getCachedApiInfoAsync: No core package found, returning null");
+        return null;
+    }
 
     // If the project has a TypeScript file beside one of the generated files, it could export blocks so we can't use the cache
     const files = project.getAllFiles();
@@ -644,6 +654,7 @@ async function getCachedApiInfoAsync(project: pkg.EditorPackage, bundled: pxt.Ma
             && filename.indexOf("/") === -1
             && pxt.Util.endsWith(filename, ".ts")
     )) {
+        console.log("[PXT DEBUG] getCachedApiInfoAsync: Custom TypeScript files detected, returning null (will force fresh compile)");
         return null;
     }
 
@@ -659,7 +670,11 @@ async function getCachedApiInfoAsync(project: pkg.EditorPackage, bundled: pxt.Ma
         }
     }).filter(p => p && p.config);
 
+    console.log("[PXT DEBUG] getCachedApiInfoAsync: Bundled packages:", bundledPackages.map(b => b.config.name));
+
     const usedPackages = project.pkgAndDeps();
+    console.log("[PXT DEBUG] getCachedApiInfoAsync: Used packages (dependencies):", usedPackages.map(d => getPackageKey(d)));
+
     const externalPackages: pkg.EditorPackage[] = [];
     const usedPackageInfo: UsedPackageInfo[] = [{
         dirname: corePkgName,
@@ -669,22 +684,32 @@ async function getCachedApiInfoAsync(project: pkg.EditorPackage, bundled: pxt.Ma
     for (const dep of usedPackages) {
         if (dep.id === "built" || dep.isTopLevel()) continue;
 
+        const depKey = getPackageKey(dep);
         let foundIt = false;
         for (const bundle of bundledPackages) {
-            if (bundle.config.name === getPackageKey(dep)) {
+            if (bundle.config.name === depKey) {
+                console.log("[PXT DEBUG] getCachedApiInfoAsync: Found bundled package match:", depKey, "->", bundle.dirname);
+                const bundledInfo = bundled[bundle.dirname];
+                console.log("[PXT DEBUG] getCachedApiInfoAsync: Bundled API info exists:", !!bundledInfo);
                 usedPackageInfo.push({
                     dirname: bundle.dirname,
-                    info: bundled[bundle.dirname]
+                    info: bundledInfo
                 });
                 foundIt = true;
                 break;
             }
         }
 
-        if (!foundIt) externalPackages.push(dep);
+        if (!foundIt) {
+            console.log("[PXT DEBUG] getCachedApiInfoAsync: Package NOT found in bundled:", depKey, "-> will be in externalPackages");
+            externalPackages.push(dep);
+        }
     }
 
+    console.log("[PXT DEBUG] getCachedApiInfoAsync: External packages (need compilation):", externalPackages.map(d => getPackageKey(d)));
+
     if (externalPackages.length) {
+        console.log("[PXT DEBUG] getCachedApiInfoAsync: Checking IndexedDB for external packages");
         let db: ApiInfoIndexedDb;
         try {
             db = await ApiInfoIndexedDb.createAsync();
@@ -692,18 +717,23 @@ async function getCachedApiInfoAsync(project: pkg.EditorPackage, bundled: pxt.Ma
         catch (e) {
             // Don't fail if the indexeddb fails, but log it
             pxt.log("Unable to open API info cache DB");
+            console.log("[PXT DEBUG] getCachedApiInfoAsync: IndexedDB failed, returning null");
             return null;
         }
 
         for (const dep of externalPackages) {
+            const depKey = getPackageKey(dep);
+            console.log("[PXT DEBUG] getCachedApiInfoAsync: Checking IndexedDB for:", depKey);
             const entry = await db.getAsync(dep);
 
             if (!entry) {
-                pxt.debug(`Could not find cached API info for ${getPackageKey(dep)}, waiting for full compile`);
+                console.log("[PXT DEBUG] getCachedApiInfoAsync: No cached API info for", depKey, "-> returning null (will force full compile)");
+                pxt.debug(`Could not find cached API info for ${depKey}, waiting for full compile`);
                 return null;
             }
             else {
-                pxt.debug(`Fetched cached API info for ${getPackageKey(dep)}`);
+                console.log("[PXT DEBUG] getCachedApiInfoAsync: Found cached API info in IndexedDB for:", depKey);
+                pxt.debug(`Fetched cached API info for ${depKey}`);
                 usedPackageInfo.push({
                     dirname: dep.getPkgId(),
                     info: entry
@@ -752,6 +782,15 @@ async function getCachedApiInfoAsync(project: pkg.EditorPackage, bundled: pxt.Ma
         }
     }
 
+    const namespaces = Object.keys(result.byQName).filter(qName => {
+        const si = result.byQName[qName];
+        // Check for namespace - TypeScript uses Module (numeric value 1) for namespaces in compiler API
+        // Use numeric value to avoid const enum issues
+        return si && si.kind === 1; // SymbolKind.Module = 1
+    });
+    console.log("[PXT DEBUG] getCachedApiInfoAsync: Returning result with namespaces:", namespaces);
+    console.log("[PXT DEBUG] getCachedApiInfoAsync: Total APIs in result:", Object.keys(result.byQName).length);
+    
     return result;
 }
 

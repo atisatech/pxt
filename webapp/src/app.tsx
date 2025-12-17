@@ -1631,6 +1631,12 @@ export class ProjectView
     ///////////////////////////////////////////////////////////
 
     reloadHeaderAsync() {
+        console.log("[PXT DEBUG] reloadHeaderAsync called");
+        if (this.state.header && pkg.mainPkg) {
+            console.log("[PXT DEBUG] Header dependencies:", pkg.mainPkg.config?.dependencies);
+        } else {
+            console.log("[PXT DEBUG] No header or mainPkg available");
+        }
         return this.loadHeaderAsync(this.state.header, this.state.editorState)
     }
 
@@ -1764,6 +1770,9 @@ export class ProjectView
                 await workspace.restoreFromBackupAsync(h);
             }
             await pkg.loadPkgAsync(h.id);
+            
+            console.log("[PXT DEBUG] After loadPkgAsync, mainPkg dependencies:", pkg.mainPkg?.config?.dependencies);
+            console.log("[PXT DEBUG] After loadPkgAsync, mainPkg dependencies (via mainPkg):", pkg.mainPkg?.config?.dependencies);
 
             if (!this.state || this.state.header != h) {
                 this.showPackageErrorsOnNextTypecheck();
@@ -1962,8 +1971,34 @@ export class ProjectView
         }
 
         try {
+            // CRITICAL: Compile blocks from dependencies BEFORE loading Blockly
+            // This ensures blocks (like menorah.strip(), kinara.strip()) are registered
+            // in Blockly's block registry before getUsedBlocksAsync() tries to decompile tutorial code
+            // First ensure a typecheck runs with dependencies loaded, so cachedApis includes dependency blocks
+            await compiler.typecheckAsync();
+            // Now get blocks - this will use the fresh cachedApis that includes dependencies
+            const blocksInfo = await compiler.getBlocksAsync();
+            
+            // CRITICAL: If dependency blocks are detected, skip cache to force fresh computation
+            // The cache may have been computed before dependencies were loaded, resulting in stale results
+            // Check for any non-standard blocks (not starting with "pxt-" or common namespaces)
+            const allBlockIds = Object.keys(blocksInfo.blocksById || {});
+            const hasDependencyBlocks = allBlockIds.some(id => 
+                !id.startsWith('pxt-') && 
+                !id.startsWith('controls_') && 
+                !id.startsWith('loops_') && 
+                !id.startsWith('logic_') && 
+                !id.startsWith('variables_') &&
+                !id.startsWith('math_') &&
+                !id.startsWith('text_') &&
+                !id.startsWith('arrays_') &&
+                !id.startsWith('functions_')
+            );
+            const shouldSkipCache = skipTutorialInfoCache || hasDependencyBlocks;
+            
+            // Now load Blockly with the compiled blocks registered
             await this.loadBlocklyAsync();
-            const tutorialBlocks = await tutorial.getUsedBlocksAsync(t.tutorialCode, t.tutorial, t.language, skipTutorialInfoCache);
+            const tutorialBlocks = await tutorial.getUsedBlocksAsync(t.tutorialCode, t.tutorial, t.language, shouldSkipCache);
             let editorState: pxt.editor.EditorState = {
             }
 
