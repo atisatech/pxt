@@ -32,8 +32,15 @@ export abstract class ToolboxEditor extends srceditor.Editor {
             filters = projectFilter;
         }
 
-
         if (filters) {
+            // Special handling: Always show loop blocks in tutorial mode (similar to variables/functions)
+            // Loop blocks are core blocks that students need to learn, even if not extracted from code
+            const loopBlockTypes = ["controls_for", "controls_repeat_ext", "controls_forEach", "controls_whileUntil", "controls_repeat"];
+            const isLoopBlock = loopBlockTypes.indexOf(blockId) !== -1 || ns === "loops" || ns === "control";
+            if (isLoopBlock && !shadow) {
+                return true;
+            }
+            
             let blockFilter: pxt.editor.FilterState | boolean;
             if (filters.blocks) {
                 if (filters.blocks[blockId] !== undefined) {
@@ -46,13 +53,23 @@ export abstract class ToolboxEditor extends srceditor.Editor {
             const categoryFilter = filters.namespaces && filters.namespaces[ns];
             // block-level filters should not apply to shadow blocks (nested)
             // First try block filters
-            if (blockFilter != undefined && blockFilter == pxt.editor.FilterState.Hidden && !shadow) return false;
-            if (blockFilter != undefined) return true;
+            if (blockFilter != undefined && blockFilter == pxt.editor.FilterState.Hidden && !shadow) {
+                return false;
+            }
+            if (blockFilter != undefined) {
+                return true;
+            }
             // Check if category is hidden
-            if (categoryFilter != undefined && categoryFilter == pxt.editor.FilterState.Hidden) return false;
-            if (categoryFilter != undefined) return true;
+            if (categoryFilter != undefined && categoryFilter == pxt.editor.FilterState.Hidden) {
+                return false;
+            }
+            if (categoryFilter != undefined) {
+                return true;
+            }
             // Check default filter state
-            if (filters.defaultState != undefined && filters.defaultState == pxt.editor.FilterState.Hidden && !shadow) return false;
+            if (filters.defaultState != undefined && filters.defaultState == pxt.editor.FilterState.Hidden && !shadow) {
+                return false;
+            }
         }
         return true;
     }
@@ -73,6 +90,9 @@ export abstract class ToolboxEditor extends srceditor.Editor {
                 filters.blocks["procedures_defnoreturn"] ||
                 filters.blocks["procedures_callnoreturn"]) &&
                 (!filters.namespaces || filters.namespaces["functions"] !== pxt.editor.FilterState.Disabled)) {
+                return true;
+            } else if (ns === "loops" || ns === "control") {
+                // Always show loops category in tutorial mode - students need to learn loops
                 return true;
             } else {
                 return false;

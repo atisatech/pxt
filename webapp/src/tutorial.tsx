@@ -128,6 +128,8 @@ function getUsedBlocksInternalAsync(code: string[], id: string, language?: strin
 
                 headless?.dispose();
 
+                const menorahUsed = Object.keys(usedBlocks).filter(b => b.startsWith("menorah_"));
+                console.log("[DEBUG TUTORIAL] Final menorah blocks in usedBlocks:", menorahUsed);
                 if (pxt.options.debug) {
                     pxt.debug(JSON.stringify(snippetBlocks, null, 2));
                 }
