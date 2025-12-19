@@ -3157,13 +3157,48 @@ export class ProjectView
         pxt.perf.measureEnd(Measurements.CreateProjectAsync);
     }
 
+    // Check if board selection should be shown for new projects/tutorials
+    private shouldShowBoardChooser(): boolean {
+        return pxt.appTarget.appTheme.chooseBoardOnNewProject
+            && pxt.appTarget.simulator
+            && !!pxt.appTarget.simulator.dynamicBoardDefinition;
+    }
+
+    // Check if a tutorial's package matches a board definition
+    // If so, we can auto-select that board and skip the board chooser
+    private findMatchingBoardForTutorial(dependencies: pxt.Map<string>): { name: string; packageName: string } | undefined {
+        if (!dependencies || !pxt.appTarget.bundledpkgs) {
+            return undefined;
+        }
+
+        const bundled = pxt.appTarget.bundledpkgs;
+        
+        // Check each package in dependencies to see if it matches a board
+        for (const packageName of Object.keys(dependencies)) {
+            // Check if this package is a board (core package in bundledpkgs)
+            if (bundled[packageName]) {
+                try {
+                    const pkgConfig = JSON.parse(bundled[packageName]["pxt.json"]) as pxt.PackageConfig;
+                    // Boards are marked with core: true
+                    if (pkgConfig.core) {
+                        pxt.debug(`[tutorial] Auto-selected board ${pkgConfig.name || packageName} for package ${packageName}`);
+                        return { name: pkgConfig.name || packageName, packageName: packageName };
+                    }
+                } catch (e) {
+                    // Invalid pxt.json, skip
+                    continue;
+                }
+            }
+        }
+
+        return undefined;
+    }
+
     // in multiboard targets, allow use to pick a different board
     // after the project is loaded
     // this could be done prior to the project creation too
     private autoChooseBoardAsync(features?: string[]): Promise<void> {
-        if (pxt.appTarget.appTheme.chooseBoardOnNewProject
-            && pxt.appTarget.simulator
-            && !!pxt.appTarget.simulator.dynamicBoardDefinition)
+        if (this.shouldShowBoardChooser())
             return this.showBoardDialogAsync(features, false);
         return Promise.resolve();
     }
@@ -5016,6 +5051,23 @@ export class ProjectView
                 await this.loadHeaderAsync(header);
             }
             else {
+                // Check if board selection is needed BEFORE creating the project
+                // This prevents the tutorial from flashing before the board chooser appears
+                if (autoChooseBoard && this.shouldShowBoardChooser()) {
+                    // First, check if the tutorial's package matches a specific board
+                    // If so, auto-select that board and skip the chooser
+                    const matchingBoard = this.findMatchingBoardForTutorial(dependencies);
+                    
+                    if (!matchingBoard) {
+                        // No matching board found - show board chooser for user to select
+                        // This ensures board chooser appears before tutorial renders
+                        await this.showBoardDialogAsync(features, false);
+                    }
+                    // If matchingBoard is found, we skip the chooser and proceed directly
+                    // The matching board is already in dependencies, so it will be selected automatically
+                }
+
+                // Now create the project (board selection already completed if needed)
                 await this.createProjectAsync({
                     name: filename,
                     tutorial: options,
@@ -5024,9 +5076,9 @@ export class ProjectView
                     temporary: temporary,
                     skillmapProject: pxt.BrowserUtils.isSkillmapEditor()
                 });
-                if (autoChooseBoard) {
-                    await this.autoChooseBoardAsync(features);
-                }
+                
+                // Board selection was already handled above, so skip autoChooseBoardAsync
+                // to avoid showing the board chooser twice
                 this.postTutorialProgress();
             }
         }
