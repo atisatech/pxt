@@ -6,6 +6,7 @@ import * as chai from "chai";
 import * as dmp from "diff-match-patch";
 import * as pxteditor from "../../pxteditor";
 import { getTextAtTime, HistoryFile, parseHistoryFile, updateHistory } from "../../pxteditor/history";
+import * as util from "../common/testUtils";
 
 pxt.appTarget = {
     versions: {
@@ -490,6 +491,259 @@ describe("pxt.github.normalizeTutorialPath", () => {
     it("should parse actual links to markdown files in github", () => {
         const url = "https://github.com/Mojang/EducationContent/blob/master/computing/unit-2/lesson-1.md";
         chai.expect(pxt.github.normalizeTutorialPath(url)).equals(testPath);
+    });
+});
+
+// Utility functions for board chooser logic (extracted from ProjectView for testability)
+function shouldShowBoardChooser(): boolean {
+    return !!(pxt.appTarget.appTheme.chooseBoardOnNewProject
+        && pxt.appTarget.simulator
+        && pxt.appTarget.simulator.dynamicBoardDefinition);
+}
+
+function findMatchingBoardForTutorial(dependencies: pxt.Map<string>): { name: string; packageName: string } | undefined {
+    if (!dependencies || !pxt.appTarget.bundledpkgs) {
+        return undefined;
+    }
+
+    const bundled = pxt.appTarget.bundledpkgs;
+    
+    // Check each package in dependencies to see if it matches a board
+    for (const packageName of Object.keys(dependencies)) {
+        // Check if this package is a board (core package in bundledpkgs)
+        if (bundled[packageName]) {
+            try {
+                const pkgConfig = JSON.parse(bundled[packageName]["pxt.json"]) as pxt.PackageConfig;
+                // Boards are marked with core: true
+                if (pkgConfig.core) {
+                    return { name: pkgConfig.name || packageName, packageName: packageName };
+                }
+            } catch (e) {
+                // Invalid pxt.json, skip
+                continue;
+            }
+        }
+    }
+
+    return undefined;
+}
+
+describe("board chooser utilities", () => {
+    beforeEach(() => {
+        // Reset to default test target with clean state
+        const cleanTarget = JSON.parse(JSON.stringify(util.testAppTarget));
+        cleanTarget.bundledpkgs = {};
+        cleanTarget.appTheme = {};
+        cleanTarget.simulator = undefined;
+        pxt.setAppTarget(cleanTarget);
+    });
+
+    describe("shouldShowBoardChooser", () => {
+        it("returns true when all conditions met", () => {
+            pxt.appTarget.appTheme.chooseBoardOnNewProject = true;
+            pxt.appTarget.simulator = {
+                dynamicBoardDefinition: true
+            } as any;
+
+            chai.expect(shouldShowBoardChooser()).to.equal(true);
+        });
+
+        it("returns false when chooseBoardOnNewProject is false", () => {
+            pxt.appTarget.appTheme.chooseBoardOnNewProject = false;
+            pxt.appTarget.simulator = {
+                dynamicBoardDefinition: true
+            } as any;
+
+            chai.expect(shouldShowBoardChooser()).to.equal(false);
+        });
+
+        it("returns false when simulator is undefined", () => {
+            pxt.appTarget.appTheme.chooseBoardOnNewProject = true;
+            pxt.appTarget.simulator = undefined;
+
+            chai.expect(shouldShowBoardChooser()).to.equal(false);
+        });
+
+        it("returns false when dynamicBoardDefinition is false", () => {
+            pxt.appTarget.appTheme.chooseBoardOnNewProject = true;
+            pxt.appTarget.simulator = {
+                dynamicBoardDefinition: false
+            } as any;
+
+            chai.expect(shouldShowBoardChooser()).to.equal(false);
+        });
+
+        it("returns false when dynamicBoardDefinition is undefined", () => {
+            pxt.appTarget.appTheme.chooseBoardOnNewProject = true;
+            pxt.appTarget.simulator = {
+                dynamicBoardDefinition: undefined
+            } as any;
+
+            chai.expect(shouldShowBoardChooser()).to.equal(false);
+        });
+    });
+
+    describe("findMatchingBoardForTutorial", () => {
+        it("returns undefined when no dependencies", () => {
+            chai.expect(findMatchingBoardForTutorial(undefined as any)).to.equal(undefined);
+            chai.expect(findMatchingBoardForTutorial({})).to.equal(undefined);
+        });
+
+        it("returns undefined when bundledpkgs is empty", () => {
+            pxt.appTarget.bundledpkgs = {};
+            const dependencies = { "some-package": "1.0.0" };
+
+            chai.expect(findMatchingBoardForTutorial(dependencies)).to.equal(undefined);
+        });
+
+        it("returns undefined when bundledpkgs is undefined", () => {
+            pxt.appTarget.bundledpkgs = undefined as any;
+            const dependencies = { "some-package": "1.0.0" };
+
+            chai.expect(findMatchingBoardForTutorial(dependencies)).to.equal(undefined);
+        });
+
+        it("returns board when package matches core board", () => {
+            const boardName = "chanukah-menorah-lantern";
+            const boardConfig: pxt.PackageConfig = {
+                name: "Menorah PCB v1",
+                core: true,
+                dependencies: {},
+                files: []
+            };
+
+            pxt.appTarget.bundledpkgs = {
+                [boardName]: {
+                    "pxt.json": JSON.stringify(boardConfig)
+                }
+            };
+
+            const dependencies = { [boardName]: "1.0.0" };
+            const result = findMatchingBoardForTutorial(dependencies);
+
+            chai.expect(result).to.not.equal(undefined);
+            chai.expect(result!.name).to.equal("Menorah PCB v1");
+            chai.expect(result!.packageName).to.equal(boardName);
+        });
+
+        it("returns undefined when package is not a board (core: false)", () => {
+            const packageName = "some-extension";
+            const packageConfig: pxt.PackageConfig = {
+                name: "Some Extension",
+                core: false,
+                dependencies: {},
+                files: []
+            };
+
+            pxt.appTarget.bundledpkgs = {
+                [packageName]: {
+                    "pxt.json": JSON.stringify(packageConfig)
+                }
+            };
+
+            const dependencies = { [packageName]: "1.0.0" };
+            const result = findMatchingBoardForTutorial(dependencies);
+
+            chai.expect(result).to.equal(undefined);
+        });
+
+        it("returns undefined when package not in bundledpkgs", () => {
+            pxt.appTarget.bundledpkgs = {
+                "other-package": {
+                    "pxt.json": JSON.stringify({ name: "Other", core: true, files: [] })
+                }
+            };
+
+            const dependencies = { "unknown-package": "1.0.0" };
+            const result = findMatchingBoardForTutorial(dependencies);
+
+            chai.expect(result).to.equal(undefined);
+        });
+
+        it("handles invalid pxt.json gracefully", () => {
+            const packageName = "broken-package";
+            // Set up bundledpkgs first
+            if (!pxt.appTarget.bundledpkgs) {
+                pxt.appTarget.bundledpkgs = {};
+            }
+            pxt.appTarget.bundledpkgs[packageName] = {
+                "pxt.json": "invalid json {"
+            };
+
+            const dependencies = { [packageName]: "1.0.0" };
+            
+            // Should not throw, should return undefined
+            chai.expect(() => findMatchingBoardForTutorial(dependencies)).to.not.throw();
+            chai.expect(findMatchingBoardForTutorial(dependencies)).to.equal(undefined);
+        });
+
+        it("uses packageName as name fallback when pkgConfig.name is undefined", () => {
+            const packageName = "test-board";
+            const boardConfig: pxt.PackageConfig = {
+                name: undefined as any,
+                core: true,
+                dependencies: {},
+                files: []
+            };
+
+            pxt.appTarget.bundledpkgs = {
+                [packageName]: {
+                    "pxt.json": JSON.stringify(boardConfig)
+                }
+            };
+
+            const dependencies = { [packageName]: "1.0.0" };
+            const result = findMatchingBoardForTutorial(dependencies);
+
+            chai.expect(result).to.not.equal(undefined);
+            chai.expect(result!.name).to.equal(packageName);
+            chai.expect(result!.packageName).to.equal(packageName);
+        });
+
+        it("returns first matching board when multiple packages", () => {
+            const board1 = "board1";
+            const board2 = "board2";
+            
+            pxt.appTarget.bundledpkgs = {
+                [board1]: {
+                    "pxt.json": JSON.stringify({ name: "Board 1", core: true, files: [] })
+                },
+                [board2]: {
+                    "pxt.json": JSON.stringify({ name: "Board 2", core: true, files: [] })
+                }
+            };
+
+            const dependencies = { [board1]: "1.0.0", [board2]: "1.0.0" };
+            const result = findMatchingBoardForTutorial(dependencies);
+
+            // Should return first board found (order-dependent based on Object.keys)
+            chai.expect(result).to.not.equal(undefined);
+            // The exact board depends on Object.keys iteration order, but should be one of them
+            chai.expect([board1, board2]).to.include(result!.packageName);
+        });
+
+        it("returns board when package has core: true even with other properties", () => {
+            const boardName = "kwanzaa-kinara-lantern";
+            const boardConfig: pxt.PackageConfig = {
+                name: "Kinara PCB v1",
+                core: true,
+                dependencies: { "neopixel": "*" },
+                files: ["config.ts", "board.json"]
+            };
+
+            pxt.appTarget.bundledpkgs = {
+                [boardName]: {
+                    "pxt.json": JSON.stringify(boardConfig)
+                }
+            };
+
+            const dependencies = { [boardName]: "1.0.0" };
+            const result = findMatchingBoardForTutorial(dependencies);
+
+            chai.expect(result).to.not.equal(undefined);
+            chai.expect(result!.name).to.equal("Kinara PCB v1");
+            chai.expect(result!.packageName).to.equal(boardName);
+        });
     });
 });
 
