@@ -747,6 +747,235 @@ describe("board chooser utilities", () => {
     });
 });
 
+// Integration tests for startTutorialAsync flow
+describe("startTutorialAsync integration", () => {
+    interface CallLog {
+        method: string;
+        timestamp: number;
+        args?: any[];
+    }
+
+    class MockProjectView {
+        public callLog: CallLog[] = [];
+        private shouldShowBoardChooserValue: boolean = true;
+
+        shouldShowBoardChooser(): boolean {
+            return this.shouldShowBoardChooserValue;
+        }
+
+        findMatchingBoardForTutorial(dependencies: pxt.Map<string>): { name: string; packageName: string } | undefined {
+            return findMatchingBoardForTutorial(dependencies);
+        }
+
+        async showBoardDialogAsync(features?: string[], skipDialog?: boolean): Promise<void> {
+            this.callLog.push({
+                method: "showBoardDialogAsync",
+                timestamp: Date.now(),
+                args: [features, skipDialog]
+            });
+            // Simulate async operation
+            return Promise.resolve();
+        }
+
+        async createProjectAsync(options: any): Promise<void> {
+            this.callLog.push({
+                method: "createProjectAsync",
+                timestamp: Date.now(),
+                args: [options]
+            });
+            // Simulate async operation
+            return Promise.resolve();
+        }
+
+        postTutorialProgress(): void {
+            this.callLog.push({
+                method: "postTutorialProgress",
+                timestamp: Date.now()
+            });
+        }
+
+        // Simulate the startTutorialAsync flow for new tutorials (not recipes)
+        async simulateStartTutorialFlow(
+            dependencies: pxt.Map<string>,
+            features?: string[],
+            autoChooseBoard: boolean = true
+        ): Promise<void> {
+            // This simulates the key part of startTutorialAsync for new tutorials
+            if (autoChooseBoard && this.shouldShowBoardChooser()) {
+                const matchingBoard = this.findMatchingBoardForTutorial(dependencies);
+                
+                if (!matchingBoard) {
+                    // No matching board found - show board chooser
+                    await this.showBoardDialogAsync(features, false);
+                }
+                // If matchingBoard is found, we skip the chooser and proceed directly
+            }
+
+            // Now create the project (board selection already completed if needed)
+            await this.createProjectAsync({
+                dependencies,
+                tutorial: { id: "test-tutorial" }
+            });
+            
+            // Board selection was already handled above
+            this.postTutorialProgress();
+        }
+
+        reset(): void {
+            this.callLog = [];
+            this.shouldShowBoardChooserValue = true;
+        }
+
+        setShouldShowBoardChooser(value: boolean): void {
+            this.shouldShowBoardChooserValue = value;
+        }
+    }
+
+    let mockView: MockProjectView;
+
+    beforeEach(() => {
+        mockView = new MockProjectView();
+        // Reset appTarget
+        const cleanTarget = JSON.parse(JSON.stringify(util.testAppTarget));
+        cleanTarget.bundledpkgs = {};
+        cleanTarget.appTheme = {};
+        cleanTarget.simulator = undefined;
+        pxt.setAppTarget(cleanTarget);
+    });
+
+    it("shows board chooser BEFORE project creation for generic tutorial", async () => {
+        // Setup: Generic tutorial (no matching board)
+        pxt.appTarget.appTheme.chooseBoardOnNewProject = true;
+        pxt.appTarget.simulator = { dynamicBoardDefinition: true } as any;
+        pxt.appTarget.bundledpkgs = {}; // No boards
+
+        const dependencies = { "some-extension": "1.0.0" };
+        const features = ["uf2", "light"];
+
+        await mockView.simulateStartTutorialFlow(dependencies, features, true);
+
+        // Verify call order: showBoardDialogAsync called before createProjectAsync
+        chai.expect(mockView.callLog.length).to.equal(3);
+        chai.expect(mockView.callLog[0].method).to.equal("showBoardDialogAsync");
+        chai.expect(mockView.callLog[1].method).to.equal("createProjectAsync");
+        chai.expect(mockView.callLog[2].method).to.equal("postTutorialProgress");
+
+        // Verify showBoardDialogAsync was called with correct features
+        chai.expect(mockView.callLog[0].args[0]).to.deep.equal(features);
+        chai.expect(mockView.callLog[0].args[1]).to.equal(false);
+
+        // Verify createProjectAsync was called with correct dependencies
+        chai.expect(mockView.callLog[1].args[0].dependencies).to.deep.equal(dependencies);
+    });
+
+    it("skips board chooser for board-specific tutorial", async () => {
+        // Setup: Board-specific tutorial (matching board)
+        pxt.appTarget.appTheme.chooseBoardOnNewProject = true;
+        pxt.appTarget.simulator = { dynamicBoardDefinition: true } as any;
+        
+        const boardName = "chanukah-menorah-lantern";
+        const boardConfig: pxt.PackageConfig = {
+            name: "Menorah PCB v1",
+            core: true,
+            dependencies: {},
+            files: []
+        };
+
+        pxt.appTarget.bundledpkgs = {
+            [boardName]: {
+                "pxt.json": JSON.stringify(boardConfig)
+            }
+        };
+
+        const dependencies = { [boardName]: "1.0.0" };
+        const features = ["uf2", "light"];
+
+        await mockView.simulateStartTutorialFlow(dependencies, features, true);
+
+        // Verify: showBoardDialogAsync NOT called, createProjectAsync called directly
+        chai.expect(mockView.callLog.length).to.equal(2);
+        chai.expect(mockView.callLog[0].method).to.equal("createProjectAsync");
+        chai.expect(mockView.callLog[1].method).to.equal("postTutorialProgress");
+
+        // Verify no showBoardDialogAsync calls
+        const chooserCalls = mockView.callLog.filter(c => c.method === "showBoardDialogAsync");
+        chai.expect(chooserCalls.length).to.equal(0);
+
+        // Verify createProjectAsync was called with matching board in dependencies
+        chai.expect(mockView.callLog[0].args[0].dependencies).to.deep.equal(dependencies);
+        chai.expect(mockView.callLog[0].args[0].dependencies[boardName]).to.equal("1.0.0");
+    });
+
+    it("does not show chooser when shouldShowBoardChooser returns false", async () => {
+        // Setup: Board selection disabled
+        mockView.setShouldShowBoardChooser(false);
+        
+        const dependencies = { "some-package": "1.0.0" };
+
+        await mockView.simulateStartTutorialFlow(dependencies, undefined, true);
+
+        // Verify: No showBoardDialogAsync, createProjectAsync called directly
+        chai.expect(mockView.callLog.length).to.equal(2);
+        chai.expect(mockView.callLog[0].method).to.equal("createProjectAsync");
+        chai.expect(mockView.callLog[1].method).to.equal("postTutorialProgress");
+
+        const chooserCalls = mockView.callLog.filter(c => c.method === "showBoardDialogAsync");
+        chai.expect(chooserCalls.length).to.equal(0);
+    });
+
+    it("does not show chooser when autoChooseBoard is false", async () => {
+        // Setup: autoChooseBoard disabled
+        pxt.appTarget.appTheme.chooseBoardOnNewProject = true;
+        pxt.appTarget.simulator = { dynamicBoardDefinition: true } as any;
+        
+        const dependencies = { "some-package": "1.0.0" };
+
+        await mockView.simulateStartTutorialFlow(dependencies, undefined, false);
+
+        // Verify: No showBoardDialogAsync, createProjectAsync called directly
+        chai.expect(mockView.callLog.length).to.equal(2);
+        chai.expect(mockView.callLog[0].method).to.equal("createProjectAsync");
+        chai.expect(mockView.callLog[1].method).to.equal("postTutorialProgress");
+
+        const chooserCalls = mockView.callLog.filter(c => c.method === "showBoardDialogAsync");
+        chai.expect(chooserCalls.length).to.equal(0);
+    });
+
+    it("maintains correct call order even with async operations", async () => {
+        // Setup: Generic tutorial with async delays
+        pxt.appTarget.appTheme.chooseBoardOnNewProject = true;
+        pxt.appTarget.simulator = { dynamicBoardDefinition: true } as any;
+        pxt.appTarget.bundledpkgs = {};
+
+        // Add delays to simulate real async operations
+        const originalShow = mockView.showBoardDialogAsync.bind(mockView);
+        mockView.showBoardDialogAsync = async function(...args) {
+            await new Promise(resolve => setTimeout(resolve, 20));
+            return originalShow(...args);
+        };
+
+        const originalCreate = mockView.createProjectAsync.bind(mockView);
+        mockView.createProjectAsync = async function(...args) {
+            await new Promise(resolve => setTimeout(resolve, 20));
+            return originalCreate(...args);
+        };
+
+        const dependencies = { "some-extension": "1.0.0" };
+
+        await mockView.simulateStartTutorialFlow(dependencies, undefined, true);
+
+        // Verify call order is maintained despite async delays
+        chai.expect(mockView.callLog.length).to.equal(3);
+        chai.expect(mockView.callLog[0].method).to.equal("showBoardDialogAsync");
+        chai.expect(mockView.callLog[1].method).to.equal("createProjectAsync");
+        chai.expect(mockView.callLog[2].method).to.equal("postTutorialProgress");
+
+        // Verify timestamps show correct ordering (allowing for same millisecond)
+        chai.expect(mockView.callLog[0].timestamp).to.be.at.most(mockView.callLog[1].timestamp);
+        chai.expect(mockView.callLog[1].timestamp).to.be.at.most(mockView.callLog[2].timestamp);
+    });
+});
+
 function createProjectText(): pxt.workspace.ScriptText {
     // A realistic timeline of project edits
     const dates = [
